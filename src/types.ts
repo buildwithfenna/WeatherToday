@@ -15,12 +15,6 @@ export interface WeatherData {
   feelsLike?: number;
 }
 
-export interface LocationCoordinates {
-  latitude: number;
-  longitude: number;
-  accuracy?: number;
-}
-
 export interface WeatherApiResponse {
   main: {
     temp: number;
@@ -66,7 +60,6 @@ export interface ParsedVoiceCommand {
 }
 
 export interface SessionState {
-  lastLocation?: LocationCoordinates;
   lastWeatherData?: WeatherData;
   lastUpdateTime?: number;
   preferredUnits: 'metric' | 'imperial';

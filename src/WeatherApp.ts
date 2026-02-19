@@ -1,6 +1,6 @@
 import { AppServer, AppSession } from '@mentraos/sdk';
 import { WeatherService } from './WeatherService';
-import { WeatherData, LocationCoordinates, ParsedVoiceCommand, SessionState } from './types';
+import { WeatherData, ParsedVoiceCommand, SessionState } from './types';
 
 /**
  * WeatherToday! - Voice-controlled weather app for MentraOS smart glasses
@@ -55,11 +55,11 @@ export class WeatherApp extends AppServer {
   private async showWelcomeScreen(session: AppSession): Promise<void> {
     session.layouts.showReferenceCard(
       'WeatherToday! 🌤️',
-      'Say:\n• "What\'s the weather?"\n• "Weather in [city]"\n• "Current conditions"\n\nI\'ll get your local weather automatically!'
+      'Say:\n• "Weather in [city]"\n• "New York weather"\n• "What\'s the weather in London?"\n\nJust tell me any city name!'
     );
     
     // Play welcome message
-    await session.audio.playTTS('Welcome to Weather Today! Ask me about the weather in any city, or say "what\'s the weather" for your current location.');
+    await session.audio.playTTS('Welcome to Weather Today! Ask me about the weather in any city by saying "weather in" followed by the city name.');
   }
 
   /**
@@ -77,7 +77,7 @@ export class WeatherApp extends AppServer {
         await this.handleWeatherCommand(session, sessionId, command);
       } catch (error) {
         session.logger.error('Error processing voice command', { error: error instanceof Error ? error.message : 'Unknown error', sessionId });
-        await this.showError(session, 'Sorry, I didn\'t understand that. Try saying "what\'s the weather" or "weather in [city name]".');
+        await this.showError(session, 'Sorry, I need a city name. Try saying "weather in [city name]" like "weather in New York".');
       }
     });
 
@@ -85,9 +85,6 @@ export class WeatherApp extends AppServer {
     session.events.onButtonPress(async (data) => {
       if (data.action === 'press') {
         switch (data.button) {
-          case 'select':
-            await this.getCurrentWeather(session, sessionId);
-            break;
           case 'back':
             await this.showWelcomeScreen(session);
             break;
@@ -102,25 +99,17 @@ export class WeatherApp extends AppServer {
   private parseVoiceCommand(text: string): ParsedVoiceCommand {
     const lowerText = text.toLowerCase().trim();
     
-    // Weather command patterns
-    const weatherPatterns = [
-      /what'?s the weather/i,
-      /current weather/i,
-      /weather conditions/i,
-      /how'?s the weather/i,
-      /weather today/i,
-      /today'?s weather/i
-    ];
-    
-    // Location-specific patterns
+    // Location-specific patterns - now required
     const locationPatterns = [
       /weather in (.+)/i,
       /(.+) weather/i,
       /what'?s the weather in (.+)/i,
-      /how'?s the weather in (.+)/i
+      /how'?s the weather in (.+)/i,
+      /weather for (.+)/i,
+      /tell me the weather in (.+)/i
     ];
     
-    // Check for location-specific commands first
+    // Check for location-specific commands
     for (const pattern of locationPatterns) {
       const match = lowerText.match(pattern);
       if (match && match[1]) {
@@ -136,15 +125,7 @@ export class WeatherApp extends AppServer {
       }
     }
     
-    // Check for general weather commands
-    if (weatherPatterns.some(pattern => pattern.test(lowerText))) {
-      return {
-        command: 'current',
-        isLocationSpecific: false
-      };
-    }
-    
-    throw new Error('Unrecognized weather command');
+    throw new Error('Please specify a city name');
   }
 
   /**
@@ -162,17 +143,13 @@ export class WeatherApp extends AppServer {
     session.dashboard.content.writeToMain('🔄 Getting weather...');
     
     try {
-      let weatherData: WeatherData;
-      
-      if (command.isLocationSpecific && command.location) {
-        // Get weather for specific city
-        session.logger.info('Fetching weather for city', { city: command.location, sessionId });
-        weatherData = await this.weatherService.getWeatherByCity(command.location);
-      } else {
-        // Get weather for current location
-        session.logger.info('Fetching weather for current location', { sessionId });
-        weatherData = await this.getCurrentLocationWeather(session, sessionId);
+      if (!command.isLocationSpecific || !command.location) {
+        throw new Error('Please specify a city name');
       }
+      
+      // Get weather for specific city
+      session.logger.info('Fetching weather for city', { city: command.location, sessionId });
+      const weatherData = await this.weatherService.getWeatherByCity(command.location);
       
       await this.displayWeatherData(session, weatherData);
       
@@ -187,67 +164,6 @@ export class WeatherApp extends AppServer {
       session.logger.error('Error fetching weather', { error: error instanceof Error ? error.message : 'Unknown error', sessionId });
       await this.showError(session, error instanceof Error ? error.message : 'Failed to get weather data');
     }
-  }
-
-  /**
-   * Get weather for current location
-   */
-  private async getCurrentLocationWeather(session: AppSession, sessionId: string): Promise<WeatherData> {
-    return new Promise((resolve, reject) => {
-      session.location.subscribeToStream(
-        { accuracy: 'high' },
-        async (locationData) => {
-          try {
-            const coordinates: LocationCoordinates = {
-              latitude: locationData.lat,
-              longitude: locationData.lng,
-              accuracy: locationData.accuracy
-            };
-            
-            session.logger.info('Location received', { coordinates, sessionId });
-            
-            const weatherData = await this.weatherService.getWeatherByCoordinates(coordinates);
-            
-            // Update session state
-            const sessionState = this.sessionStates.get(sessionId);
-            if (sessionState) {
-              sessionState.lastLocation = coordinates;
-            }
-            
-            resolve(weatherData);
-          } catch (error) {
-            reject(error);
-          }
-        }
-      );
-      
-      // Set timeout for location request
-      setTimeout(() => {
-        reject(new Error('Location request timed out. Please try again or specify a city name.'));
-      }, 10000);
-    });
-  }
-
-  /**
-   * Get current weather using last known location or request new location
-   */
-  private async getCurrentWeather(session: AppSession, sessionId: string): Promise<void> {
-    const sessionState = this.sessionStates.get(sessionId);
-    
-    if (sessionState?.lastLocation) {
-      // Use last known location if recent
-      const now = Date.now();
-      const lastUpdate = sessionState.lastUpdateTime || 0;
-      const fiveMinutes = 5 * 60 * 1000;
-      
-      if (now - lastUpdate < fiveMinutes && sessionState.lastWeatherData) {
-        await this.displayWeatherData(session, sessionState.lastWeatherData);
-        return;
-      }
-    }
-    
-    // Get fresh weather data
-    await this.handleWeatherCommand(session, sessionId, { command: 'current', isLocationSpecific: false });
   }
 
   /**
